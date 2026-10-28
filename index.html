@@ -115,8 +115,8 @@
                     <div class="flex items-center gap-2">
                         <p class="text-[11px] text-slate-500 hidden sm:block">Học liệu & Ôn thi THCS (Khối 6-7-8-9)</p>
                         <span id="cloud-sync-badge" class="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-                            <i class="fa-solid fa-cloud-arrow-up text-emerald-500"></i>
-                            <span id="cloud-sync-text">jiomind-storage</span>
+                            <i class="fa-solid fa-cloud-arrow-up text-emerald-500" id="cloud-sync-icon"></i>
+                            <span id="cloud-sync-text">main_state_v1 • Đang kết nối...</span>
                         </span>
                     </div>
                 </div>
@@ -254,7 +254,7 @@
 
             <div style="margin-top: 22px; text-align: left; border-top: 1px solid #bae6fd; padding-top: 15px;">
                 <div class="flex items-center justify-between">
-                    <strong style="color: #0369a1; font-size: 14px;"><i class="fa-solid fa-folder-tree mr-1"></i> Tất cả tài liệu trên hệ thống (`tailieu_hoclieu`):</strong>
+                    <strong style="color: #0369a1; font-size: 14px;"><i class="fa-solid fa-folder-tree mr-1"></i> Tất cả tài liệu trên hệ thống (`tailieu_hoclieu` & `main_state_v1`):</strong>
                     <span id="cloud-files-counter" class="text-xs font-bold px-2.5 py-0.5 rounded-full bg-sky-100 text-sky-800">Đang đồng bộ...</span>
                 </div>
                 <ul id="uploadedFileList" style="margin-top: 10px; padding-left: 18px; word-break: break-all; color: #334155; max-height: 210px; overflow-y: auto;">
@@ -775,6 +775,10 @@
                     <button onclick="exportFullSystemJSON()" class="px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm">
                         <i class="fa-solid fa-download"></i> Sao lưu (.JSON)
                     </button>
+                    <label class="px-3 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm cursor-pointer">
+                        <i class="fa-solid fa-upload"></i> Khôi phục (.JSON)
+                        <input type="file" accept=".json" onchange="importFullSystemJSON(event)" class="hidden">
+                    </label>
                 </div>
             </div>
 
@@ -1186,9 +1190,43 @@
             isInitialLoad: true
         };
 
+        // Tham chiếu biến toàn cục appState trỏ trực tiếp tới state để dễ dàng kiểm tra từ Console
+        window.appState = state;
+
+        function setCloudSyncBadge(isOnline, textMsg) {
+            const badge = document.getElementById('cloud-sync-badge');
+            const textEl = document.getElementById('cloud-sync-text');
+            if (!badge || !textEl) return;
+            if (isOnline) {
+                badge.className = 'inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200';
+                textEl.textContent = textMsg || 'Đã đồng bộ main_state_v1';
+            } else {
+                badge.className = 'inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200';
+                textEl.textContent = textMsg || 'Chế độ ngoại tuyến cục bộ';
+            }
+        }
+
+        // Hàm đẩy tệp vừa tải lên vào cả mảng state.docs của jiomind_app_state/main_state_v1
+        function syncUploadedItemToMainState(fileItem) {
+            const newDocEntry = {
+                id: 'doc_cloud_' + (fileItem.clientTimestamp || Date.now()),
+                title: fileItem.name,
+                grade: fileItem.grade || 'Khối 7',
+                subject: fileItem.subject || 'Tin Học',
+                examPeriod: fileItem.examPeriod || 'CK2',
+                desc: 'Tài liệu được tải lên từ Kho Lưu Trữ Học Liệu Đám Mây và đồng bộ tự động vào main_state_v1.',
+                cover: `https://placehold.co/600x360/0284c7/ffffff?text=${encodeURIComponent((fileItem.subject || 'Tin Học') + ' - ' + (fileItem.examPeriod || 'CK2'))}`,
+                driveLink: fileItem.url
+            };
+            const exists = state.docs.some(d => d.driveLink === newDocEntry.driveLink && d.title === newDocEntry.title);
+            if (!exists) {
+                state.docs.unshift(newDocEntry);
+                saveCloudState();
+            }
+        }
+
         // =========================================================================
         // 1. TỰ ĐỘNG LẮNG NGHE VÀ TẢI DANH SÁCH FILE TỪ ĐÁM MÂY ("tailieu_hoclieu")
-        //    (Sửa lỗi kẹt "Đang tải danh sách tài liệu..." và sắp xếp an toàn)
         // =========================================================================
         function listenToCloudTailieuCollection() {
             db.collection("tailieu_hoclieu")
@@ -1199,14 +1237,7 @@
                     list.innerHTML = "";
                     state.cloudTailieuDocs = [];
 
-                    if (snapshot.empty) {
-                        list.innerHTML = "<li style='color: #64748b;'>Chưa có tài liệu nào trong kho. Hãy chọn tệp và bấm Tải lên máy chủ đám mây!</li>";
-                        if (counter) counter.textContent = "0 tài liệu";
-                        updateAllViews();
-                        return;
-                    }
-
-                    // Thu thập và sắp xếp mới nhất lên đầu (an toàn ngay cả khi createdAt đang chờ serverTimestamp)
+                    // Thu thập danh sách từ tailieu_hoclieu
                     const items = [];
                     snapshot.forEach((docSnap) => {
                         const data = docSnap.data();
@@ -1220,20 +1251,6 @@
                         const examTag = item.examPeriod || "CK2";
                         const subTag = item.subject || "Tin Học";
 
-                        const li = document.createElement("li");
-                        li.style.marginTop = "8px";
-                        li.innerHTML = `
-                            <span style="display:inline-block; background:#e0f2fe; color:#0369a1; font-size:11px; font-weight:700; padding:1px 7px; border-radius:5px; margin-right:6px;">
-                                ${gradeTag} • ${examTag} • ${subTag}
-                            </span>
-                            <a href="${item.url}" target="_blank" rel="noopener noreferrer" download="${item.name}" style="color: #0284c7; text-decoration: underline; font-weight: 600;">
-                                ${item.name}
-                            </a>
-                            <span style="font-size: 12px; color: #64748b; margin-left: 4px;">(Tải về)</span>
-                        `;
-                        list.appendChild(li);
-
-                        // Đồng bộ luôn vào lưới thẻ Kho Tài Liệu Công Khai
                         state.cloudTailieuDocs.push({
                             id: 'cloud_' + item.id,
                             title: item.name,
@@ -1246,19 +1263,48 @@
                         });
                     });
 
-                    if (counter) counter.textContent = `${items.length} tài liệu đám mây`;
+                    renderUploadedFileQuickList();
                     updateAllViews();
                 }, (error) => {
                     console.warn("Firestore tailieu_hoclieu listener warning:", error);
-                    const list = document.getElementById("uploadedFileList");
-                    if (list) {
-                        list.innerHTML = `<li style="color: #dc2626;">Chưa thể kết nối danh sách đám mây (${error.code || 'Kiểm tra Firestore Rules'}).</li>`;
-                    }
+                    renderUploadedFileQuickList();
                 });
         }
 
+        // Hiển thị danh sách hợp nhất trên khung Kho Lưu Trữ Đám Mây
+        function renderUploadedFileQuickList() {
+            const list = document.getElementById("uploadedFileList");
+            const counter = document.getElementById("cloud-files-counter");
+            if (!list) return;
+
+            const combined = getAllCombinedDocs();
+            if (counter) counter.textContent = `${combined.length} tài liệu trên hệ thống`;
+
+            if (combined.length === 0) {
+                list.innerHTML = "<li style='color: #64748b;'>Chưa có tài liệu nào trong kho.</li>";
+                return;
+            }
+
+            list.innerHTML = "";
+            combined.forEach((docItem) => {
+                const li = document.createElement("li");
+                li.style.marginTop = "8px";
+                const ep = docItem.examPeriod || "CK2";
+                li.innerHTML = `
+                    <span style="display:inline-block; background:#e0f2fe; color:#0369a1; font-size:11px; font-weight:700; padding:1px 7px; border-radius:5px; margin-right:6px;">
+                        ${docItem.grade || 'Khối 7'} • ${ep} • ${docItem.subject || 'THCS'}
+                    </span>
+                    <a href="${docItem.driveLink}" target="_blank" rel="noopener noreferrer" download="${docItem.title}" style="color: #0284c7; text-decoration: underline; font-weight: 600;">
+                        ${docItem.title}
+                    </a>
+                    <span style="font-size: 12px; color: #64748b; margin-left: 4px;">(Tải về)</span>
+                `;
+                list.appendChild(li);
+            });
+        }
+
         // =========================================================================
-        // 2. TẢI FILE LÊN FIREBASE STORAGE & GHI NHẬN VÀO CƠ SỞ DỮ LIỆU CHUNG
+        // 2. TẢI FILE LÊN FIREBASE STORAGE & ĐỒNG BỘ VÀO CẢ "tailieu_hoclieu" VÀ "main_state_v1"
         // =========================================================================
         window.uploadFileToStorage = function() {
             const fileInput = document.getElementById("fileInput");
@@ -1279,7 +1325,8 @@
             btn.style.opacity = "0.65";
             status.innerHTML = "<span style='color: #0284c7;'><i class='fa-solid fa-spinner fa-spin mr-1'></i> Đang tải dữ liệu lên máy chủ đám mây...</span>";
 
-            const storageRef = storage.ref("tailieu/" + Date.now() + "_" + file.name);
+            const nowTs = Date.now();
+            const storageRef = storage.ref("tailieu/" + nowTs + "_" + file.name);
             const uploadTask = storageRef.put(file);
 
             uploadTask.on(
@@ -1289,49 +1336,52 @@
                     status.innerText = `Đang tải lên: ${percent}%`;
                 },
                 (error) => {
-                    // Dự phòng thông minh: Nếu Firebase Storage chưa mở Rules cho tệp nhỏ (<700KB), tự động lưu qua DataURL vào Firestore để không bị gián đoạn
                     if (file.size <= 700 * 1024) {
                         const reader = new FileReader();
                         reader.onload = function(e) {
-                            db.collection("tailieu_hoclieu").add({
+                            const filePayload = {
                                 name: file.name,
                                 url: e.target.result,
                                 grade: gradeVal,
                                 examPeriod: examVal,
                                 subject: subjectVal,
-                                clientTimestamp: Date.now(),
+                                clientTimestamp: nowTs,
                                 createdAt: firebase.firestore.FieldValue.serverTimestamp()
-                            }).then(() => {
+                            };
+                            db.collection("tailieu_hoclieu").add(filePayload).then(() => {
+                                syncUploadedItemToMainState(filePayload);
                                 status.innerHTML = "<span style='color: #16a34a; font-weight: bold;'>✅ Đã lưu và đồng bộ toàn hệ thống!</span>";
                                 btn.disabled = false;
                                 btn.style.opacity = "1";
                                 fileInput.value = "";
                                 showToast(`Đã tải lên và đồng bộ: ${file.name}`, 'success');
                             }).catch((dbErr) => {
-                                status.innerHTML = `<span style='color: #dc2626;'>Lỗi quyền truy cập Firebase: ${dbErr.message}</span>`;
+                                status.innerHTML = `<span style='color: #dc2626;'>Lỗi: ${dbErr.message}</span>`;
                                 btn.disabled = false;
                                 btn.style.opacity = "1";
                             });
                         };
                         reader.readAsDataURL(file);
                     } else {
-                        status.innerHTML = `<span style='color: #dc2626;'>Lỗi Storage: ${error.message} (Vui lòng bật allow read, write: if true; trong Firebase Storage Rules)</span>`;
+                        status.innerHTML = `<span style='color: #dc2626;'>Lỗi: ${error.message}</span>`;
                         btn.disabled = false;
                         btn.style.opacity = "1";
                     }
                 },
                 () => {
                     uploadTask.snapshot.ref.getDownloadURL().then((downloadURL) => {
-                        // Ghi link vào sổ cơ sở dữ liệu chung để máy khác cùng thấy
-                        db.collection("tailieu_hoclieu").add({
+                        const filePayload = {
                             name: file.name,
                             url: downloadURL,
                             grade: gradeVal,
                             examPeriod: examVal,
                             subject: subjectVal,
-                            clientTimestamp: Date.now(),
+                            clientTimestamp: nowTs,
                             createdAt: firebase.firestore.FieldValue.serverTimestamp()
-                        }).then(() => {
+                        };
+                        // Ghi link vào sổ cơ sở dữ liệu chung tailieu_hoclieu và đồng bộ vào main_state_v1
+                        db.collection("tailieu_hoclieu").add(filePayload).then(() => {
+                            syncUploadedItemToMainState(filePayload);
                             status.innerHTML = "<span style='color: #16a34a; font-weight: bold;'>✅ Đã lưu và đồng bộ toàn hệ thống!</span>";
                             btn.disabled = false;
                             btn.style.opacity = "1";
@@ -1344,57 +1394,105 @@
         };
 
         // =========================================================================
-        // 3. ĐỒNG BỘ TRẠNG THÁI CHUNG (NHÓM, CHAT, THÀNH VIÊN) LÊN FIRESTORE
+        // 3. ĐỒNG BỘ TRỰC TIẾP VỚI db.collection("jiomind_app_state").doc("main_state_v1")
+        //    (Tích hợp nguyên bản đoạn mã onSnapshot của bạn)
         // =========================================================================
         const sharedStateDoc = db.collection("jiomind_app_state").doc("main_state_v1");
 
-        function saveSharedStateToCloud() {
-            // Đảm bảo tài khoản admin luôn chuẩn xác
+        function saveCloudState() {
             const adminIdx = state.members.findIndex(m => m.username === 'admin');
-            if (adminIdx !== -1) {
+            if (adminIdx === -1) {
+                state.members.unshift({
+                    id: 'mem_admin',
+                    fullname: 'Quản Trị Viên Hệ Thống',
+                    username: 'admin',
+                    password: 'chanbomaydi',
+                    role: 'Admin',
+                    grade: 'Khối 7',
+                    groupId: 'grp_csqt7',
+                    isOnline: true,
+                    lastSeen: Date.now()
+                });
+            } else {
                 state.members[adminIdx].password = 'chanbomaydi';
                 state.members[adminIdx].role = 'Admin';
             }
-            sharedStateDoc.set({
+
+            return sharedStateDoc.set({
                 docs: state.docs,
                 groups: state.groups,
                 members: state.members,
                 registrations: state.registrations,
                 messages: state.messages,
                 updatedAt: Date.now()
-            }, { merge: true }).catch(err => console.warn("Sync warning:", err));
+            }, { merge: true }).then(() => {
+                setCloudSyncBadge(true, 'Đã đồng bộ main_state_v1');
+            }).catch(err => {
+                console.error("Lỗi khi lưu lên main_state_v1:", err);
+                setCloudSyncBadge(false, 'Lỗi ghi Firestore');
+            });
         }
 
-        function listenToSharedState() {
-            sharedStateDoc.onSnapshot((docSnap) => {
-                if (docSnap.exists) {
-                    const data = docSnap.data();
-                    const oldMsgCount = state.messages.length;
+        // Giữ tương thích với mọi lời gọi hàm lưu trạng thái
+        const saveSharedStateToCloud = saveCloudState;
 
-                    if (Array.isArray(data.docs)) state.docs = data.docs;
-                    if (Array.isArray(data.groups)) state.groups = data.groups;
-                    if (Array.isArray(data.members)) state.members = data.members;
-                    if (Array.isArray(data.registrations)) state.registrations = data.registrations;
-                    if (Array.isArray(data.messages)) {
-                        state.messages = data.messages;
-                        if (!state.isInitialLoad && state.messages.length > oldMsgCount) {
-                            const newest = state.messages[state.messages.length - 1];
-                            if (!state.currentUser || newest.senderName !== state.currentUser.fullname) {
-                                playNotificationChime();
-                                showToast(`💬 Tin nhắn mới từ ${newest.senderName}!`, 'info');
+        function listenToSharedState() {
+            // >>> ĐOẠN MÃ ĐỌC DỮ LIỆU TỪ jiomind_app_state / main_state_v1 <<<
+            db.collection("jiomind_app_state").doc("main_state_v1")
+                .onSnapshot((doc) => {
+                    if (doc.exists) {
+                        const data = doc.data();
+                        const docsList = data.docs || [];
+                        console.log("Dữ liệu học liệu đã tải về:", docsList);
+
+                        const oldMsgCount = state.messages.length;
+
+                        // Cập nhật biến dữ liệu chính của trang web tại đây
+                        if (Array.isArray(data.docs) && data.docs.length > 0) {
+                            state.docs = data.docs;
+                        }
+                        if (Array.isArray(data.groups) && data.groups.length > 0) {
+                            state.groups = data.groups;
+                        }
+                        if (Array.isArray(data.members) && data.members.length > 0) {
+                            state.members = data.members;
+                            const adm = state.members.find(m => m.username === 'admin');
+                            if (adm) {
+                                adm.password = 'chanbomaydi';
+                                adm.role = 'Admin';
                             }
                         }
+                        if (Array.isArray(data.registrations)) {
+                            state.registrations = data.registrations;
+                        }
+                        if (Array.isArray(data.messages)) {
+                            state.messages = data.messages;
+                            if (!state.isInitialLoad && state.messages.length > oldMsgCount) {
+                                const newest = state.messages[state.messages.length - 1];
+                                if (!state.currentUser || newest.senderName !== state.currentUser.fullname) {
+                                    playNotificationChime();
+                                    showToast(`💬 Tin nhắn mới từ ${newest.senderName}!`, 'info');
+                                }
+                            }
+                        }
+
+                        state.isInitialLoad = false;
+                        setCloudSyncBadge(true, `main_state_v1 (${getAllCombinedDocs().length} học liệu)`);
+                        renderUploadedFileQuickList();
+                        updateAllViews();
+                    } else {
+                        console.log("Không tìm thấy tài liệu! Đang khởi tạo dữ liệu mặc định lên main_state_v1...");
+                        saveCloudState();
+                        state.isInitialLoad = false;
+                        renderUploadedFileQuickList();
+                        updateAllViews();
                     }
-                    state.isInitialLoad = false;
+                }, (error) => {
+                    console.error("Lỗi khi đọc Firestore:", error);
+                    setCloudSyncBadge(false, 'Lỗi kết nối Firestore');
+                    renderUploadedFileQuickList();
                     updateAllViews();
-                } else {
-                    saveSharedStateToCloud();
-                    state.isInitialLoad = false;
-                }
-            }, (err) => {
-                console.warn("Shared state listener fallback:", err);
-                updateAllViews();
-            });
+                });
         }
 
         // =========================================================================
@@ -1474,7 +1572,14 @@
         // 5. HIỂN THỊ GIAO DIỆN & BỘ LỌC KHO TÀI LIỆU
         // =========================================================================
         function getAllCombinedDocs() {
-            return [...state.cloudTailieuDocs, ...state.docs];
+            const map = new Map();
+            [...state.cloudTailieuDocs, ...state.docs].forEach(item => {
+                const key = (item.title + '|' + item.driveLink).toLowerCase();
+                if (!map.has(key)) {
+                    map.set(key, item);
+                }
+            });
+            return Array.from(map.values());
         }
 
         function isMemberOnline(m) {
@@ -2220,6 +2325,29 @@
 
         window.exportFullSystemJSON = function() {
             triggerDownload(JSON.stringify(state, null, 2), 'JioMind_Backup.json', 'application/json');
+        };
+
+        window.importFullSystemJSON = function(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const imported = JSON.parse(e.target.result);
+                    if (Array.isArray(imported.docs)) state.docs = imported.docs;
+                    if (Array.isArray(imported.groups)) state.groups = imported.groups;
+                    if (Array.isArray(imported.members)) state.members = imported.members;
+                    if (Array.isArray(imported.registrations)) state.registrations = imported.registrations;
+                    if (Array.isArray(imported.messages)) state.messages = imported.messages;
+                    saveCloudState();
+                    renderUploadedFileQuickList();
+                    updateAllViews();
+                    showToast('Đã khôi phục dữ liệu và đồng bộ lên main_state_v1!', 'success');
+                } catch (err) {
+                    showToast('File JSON không hợp lệ!', 'error');
+                }
+            };
+            reader.readAsText(file);
         };
 
         // Điều hướng Tab & hiển thị Khung Upload Đám Mây ở cả Trang Chủ & Kho Tài Liệu
